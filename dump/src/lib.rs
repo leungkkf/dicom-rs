@@ -187,7 +187,7 @@ impl DumpOptions {
     where
         D: DataDictionary,
     {
-        self.dump_file_impl(stdout(), obj, true)
+        self.dump_file_impl(stdout(), obj, self.no_text_limit, self.no_limit)
     }
 
     /// Dump the contents of an open DICOM file to the given writer.
@@ -199,14 +199,27 @@ impl DumpOptions {
     where
         D: DataDictionary,
     {
-        self.dump_file_impl(to, obj, false)
+        self.dump_file_impl(to, obj, true, true)
+    }
+
+    /// Dump the contents of an open DICOM file to the given writer with given limit options.
+    pub fn dump_file_to_with_limits<D>(
+        &self,
+        to: impl Write,
+        obj: &FileDicomObject<InMemDicomObject<D>>,
+    ) -> IoResult<()>
+    where
+        D: DataDictionary,
+    {
+        self.dump_file_impl(to, obj, self.no_text_limit, self.no_limit)
     }
 
     fn dump_file_impl<D>(
         &self,
         mut to: impl Write,
         obj: &FileDicomObject<InMemDicomObject<D>>,
-        to_stdout: bool,
+        no_text_limit: bool,
+        no_limit: bool,
     ) -> IoResult<()>
     where
         D: DataDictionary,
@@ -221,11 +234,6 @@ impl DumpOptions {
 
         let width = determine_width(self.width);
 
-        let (no_text_limit, no_limit) = if to_stdout {
-            (self.no_text_limit, self.no_limit)
-        } else {
-            (true, true)
-        };
         match self.format {
             DumpFormat::Text => {
                 meta_dump(&mut to, meta, if no_limit { u32::MAX } else { width })?;
@@ -973,7 +981,7 @@ mod tests {
 
     use dicom_core::{value::DicomDate, DataElement, PrimitiveValue, VR};
     use dicom_dictionary_std::tags;
-    use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
+    use dicom_object::{FileDicomObject, FileMetaTableBuilder, InMemDicomObject};
 
     use super::whitespace_or_null;
     use crate::{ColorMode, DumpOptions};
@@ -986,8 +994,10 @@ mod tests {
         assert_eq!("AETITLE ".trim_end_matches(whitespace_or_null), "AETITLE");
     }
 
-    #[test]
-    fn dump_file_to_covers_properties() {
+    fn test_dump_file_to_covers_properties(
+        dump_dicom: impl FnOnce(FileDicomObject<InMemDicomObject>) -> Vec<u8>,
+        has_limit: bool,
+    ) {
         // create object
         let obj = InMemDicomObject::from_element_iter(vec![DataElement::new(
             tags::SOP_INSTANCE_UID,
@@ -1005,11 +1015,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut out = Vec::new();
-        DumpOptions::new()
-            .color_mode(ColorMode::Never)
-            .dump_file_to(&mut out, &file)
-            .unwrap();
+        let out = dump_dicom(file);
 
         let lines: Vec<_> = std::str::from_utf8(&out)
             .expect("output is not valid UTF-8")
@@ -1041,6 +1047,64 @@ mod tests {
 
         let parts: Vec<&str> = lines[7].split(" ").filter(|p| !p.is_empty()).collect();
         assert_eq!(&parts[..3], &["(0008,0018)", "SOPInstanceUID", "UI"]);
+
+        if !has_limit {
+            assert_eq!(parts[6], "\"1.2.888.123\"");
+        } else {
+            assert_eq!(parts[6], "\"1.2...");
+        }
+    }
+
+    #[test]
+    fn dump_file_to_covers_properties() {
+        test_dump_file_to_covers_properties(
+            |file| {
+                let mut out = Vec::new();
+
+                DumpOptions::new()
+                    .color_mode(ColorMode::Never)
+                    .dump_file_to(&mut out, &file)
+                    .unwrap();
+
+                out
+            },
+            false,
+        );
+    }
+
+    #[test]
+    fn dump_file_to_covers_properties_with_no_limits() {
+        test_dump_file_to_covers_properties(
+            |file| {
+                let mut out = Vec::new();
+
+                DumpOptions::new()
+                    .color_mode(ColorMode::Never)
+                    .dump_file_to(&mut out, &file)
+                    .unwrap();
+
+                out
+            },
+            false,
+        );
+    }
+
+    #[test]
+    fn dump_file_to_covers_properties_with_some_limits() {
+        test_dump_file_to_covers_properties(
+            |file| {
+                let mut out = Vec::new();
+
+                DumpOptions::new()
+                    .width(70)
+                    .color_mode(ColorMode::Never)
+                    .dump_file_to_with_limits(&mut out, &file)
+                    .unwrap();
+
+                out
+            },
+            true,
+        );
     }
 
     #[test]
